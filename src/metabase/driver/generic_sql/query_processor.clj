@@ -410,19 +410,18 @@
   (.getObject rs i))
 
 (defn- make-column-reader
-  "Given `COLUMN-TYPE` and `TZ_STR`, return a function for reading
+  "Given `COLUMN-TYPE` and `TZ`, return a function for reading
   that type of column from a ResultSet"
-  [^Integer column-type ^String tz-str]
-  (let [tz (some-> tz-str TimeZone/getTimeZone)]
-    (cond
-      (and tz (= column-type java.sql.Types/DATE))
-      (get-date tz)
+  [column-type tz]
+  (cond
+    (and tz (= column-type java.sql.Types/DATE))
+    (get-date tz)
 
-      (and tz (= column-type java.sql.Types/TIMESTAMP))
-      (get-timestamp tz)
+    (and tz (= column-type java.sql.Types/TIMESTAMP))
+    (get-timestamp tz)
 
-      :else
-      get-object)))
+    :else
+    get-object))
 
 (defn- read-columns-with-date-handling
   "Returns a function that will read a row from `RS`, suitable for
@@ -433,13 +432,33 @@
       (mapv (fn [^Integer i data-read-fn]
               (jdbc/result-set-read-column (data-read-fn rs rsmeta i) rsmeta i)) idxs data-read-functions))))
 
+(defn- set-parameters-with-timezone
+  "Returns a function that will set date/timestamp PreparedStatement
+  parameters with the correct timezone"
+  [^TimeZone tz]
+  (fn [^PreparedStatement stmt params]
+    (mapv (fn [^Integer ix value]
+            (cond
+
+              (and tz (instance? java.sql.Timestamp value))
+              (.setTimestamp stmt ix value (Calendar/getInstance tz))
+
+              (and tz (instance? java.util.Date value))
+              (.setDate stmt ix value (Calendar/getInstance tz))
+
+              :else
+              (jdbc/set-parameter value stmt ix)))
+          (rest (range)) params)))
+
 (defn- run-query
   "Run the query itself."
   [{sql :query, params :params, remark :remark} database connection]
   (let [sql              (str "-- " remark "\n" (hx/unescape-dots sql))
         statement        (into [sql] params)
-        [columns & rows] (jdbc/query connection statement {:identifiers identity, :as-arrays? true
-                                                           :read-columns (read-columns-with-date-handling (:timezone database))})]
+        tz               (some-> database :timezone TimeZone/getTimeZone)
+        [columns & rows] (jdbc/query connection statement {:identifiers    identity, :as-arrays? true
+                                                           :read-columns   (read-columns-with-date-handling tz)
+                                                           :set-parameters (set-parameters-with-timezone tz)})]
     {:rows    (or rows [])
      :columns columns}))
 
